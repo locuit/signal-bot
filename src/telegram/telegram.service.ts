@@ -13,44 +13,45 @@ export class TelegramService {
 
     this.bot.on('message', this.onReceiveMessage);
 
-    this.sendMessageToUser(TEST_USER_ID, `Server started at ${new Date()}`);
+    // this.sendMessageToUser(TEST_USER_ID, `Server started at ${new Date()}`);
 
     // this.getChannelMessages('-1002351920230');
   }
 
   onReceiveMessage = async (msg: any) => {
-    const tokenSplashRegex = /^token splash (\w+)$/;
-    const match = msg.text.match(tokenSplashRegex);
+    if(msg?.text) {
+      const tokenSplashRegex = /^token splash (\w+)$/;
+      const match = msg.text.match(tokenSplashRegex);
 
-    if (msg.text === 'token splash') {
-      const response = await this.getTokenSplashBybit();
-      const formattedResponse = response.result.map((item: any) => ({
-        ...item,
-        depositStart: this.formatTimestamp(item.depositStart),
-        depositEnd: this.formatTimestamp(item.depositEnd),
-        publishTime: this.formatTimestamp(item.publishTime),
-        applyStart: this.formatTimestamp(item.applyStart),
-        applyEnd: this.formatTimestamp(item.applyEnd),
-        systemTime: this.formatTimestamp(item.systemTime),
-      }));
-      const message = this.formatForTelegram(formattedResponse);
-      await this.sendMessageToUser(msg.chat.id, message);
-    } else if (match) {
-      const tokenName = match[1];
-      const response = await this.getTokenSplashByTokenName(tokenName);
-      const formattedResponse = {
-        ...response,
-        applyStart: this.formatTimestamp(response.applyStart),
-        applyEnd: this.formatTimestamp(response.applyEnd),
-        depositStart: this.formatTimestamp(response.depositStart),
-        depositEnd: this.formatTimestamp(response.depositEnd),
-        systemTime: this.formatTimestamp(response.systemTime),
-      };
-      const message = this.formatDetailForTelegram(formattedResponse);
-      await this.sendMessageToUser(msg.chat.id, message);
+      if (msg.text === 'token splash') {
+        const response = await this.getTokenSplashBybit();
+        const formattedResponse = response.result.map((item: any) => ({
+          ...item,
+          depositStart: this.formatTimestamp(item.depositStart),
+          depositEnd: this.formatTimestamp(item.depositEnd),
+          publishTime: this.formatTimestamp(item.publishTime),
+          applyStart: this.formatTimestamp(item.applyStart),
+          applyEnd: this.formatTimestamp(item.applyEnd),
+          systemTime: this.formatTimestamp(item.systemTime),
+        }));
+        const message = this.formatForTelegram(formattedResponse);
+        await this.sendMessageToUser(msg.chat.id, message);
+      } else if (match) {
+        const tokenName = match[1];
+        const response = await this.getTokenSplashByTokenName(tokenName);
+        const formattedResponse = {
+          ...response,
+          applyStart: this.formatTimestamp(response.applyStart),
+          applyEnd: this.formatTimestamp(response.applyEnd),
+          depositStart: this.formatTimestamp(response.depositStart),
+          depositEnd: this.formatTimestamp(response.depositEnd),
+          systemTime: this.formatTimestamp(response.systemTime),
+        };
+        const message = this.formatDetailForTelegram(formattedResponse);
+        await this.sendMessageToUser(msg.chat.id, message);
+      }
+
     }
-
-    this.logger.debug(msg);
   };
 
   sendMessageToUser = async (userId: string, message: string) => {
