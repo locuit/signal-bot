@@ -9,8 +9,16 @@ export class TelegramService {
   private readonly bot: TelegramBot;
   private logger = new Logger(TelegramService.name);
   private readonly redis: Redis;
-  private readonly API_URL =
-    'https://api-v1.zealy.io/communities/flipster/questboard/v2';
+  private readonly API_URLS = [
+    {
+      url: 'https://api-v1.zealy.io/communities/flipster/questboard/v2',
+      redisKey: 'quest_ids_main',
+    },
+    {
+      url: 'https://api-v1.zealy.io/communities/vnmflipstercommunity/questboard/v2',
+      redisKey: 'quest_ids_vnm',
+    },
+  ];
   private readonly HEADERS = {
     accept: 'application/json',
     origin: 'https://zealy.io',
@@ -28,43 +36,63 @@ export class TelegramService {
     });
     this.bot.on('message', this.onReceiveMessage);
 
-    setInterval(() => this.fetchData(), 60000);
+    this.scheduleFetch(); // Gọi fetch lần đầu
   }
 
   async fetchData() {
     try {
-      const response = await axios.get(this.API_URL, {
+      for (const api of this.API_URLS) {
+        await this.trackQuests(api.url, api.redisKey);
+      }
+    } catch (error) {
+      this.logger.error('❌ Lỗi khi fetch dữ liệu:', error.message);
+    } finally {
+      this.scheduleFetch(); // Lên lịch fetch tiếp theo
+    }
+  }
+
+  async trackQuests(apiUrl: string, redisKey: string) {
+    try {
+      const response = await axios.get(apiUrl,{
         headers: this.HEADERS,
       });
-      const newQuests = response.data.map((q: any) => q.id);
+      const questIds: string[] = [];
 
-      // Lấy danh sách ID đã lưu trong Redis
-      const storedIds = await this.redis.smembers('quest_ids');
+      response.data.forEach((quest: any) => {
+        questIds.push(quest.id);
+        if (quest.quests) {
+          quest.quests.forEach((subQuest: any) => {
+            questIds.push(subQuest.id);
+          });
+        }
+      });
 
-      // Tìm các ID mới
-      const newIds = newQuests.filter((id) => !storedIds.includes(id));
+      const storedIds = await this.redis.smembers(redisKey);
+      const newIds = questIds.filter((id) => !storedIds.includes(id));
 
       if (newIds.length > 0) {
-        this.logger.log(`Found ${newIds.length} new quests!`);
+        this.logger.log(`🔔 Found ${newIds.length} new quests from ${apiUrl}`);
 
-        // Gửi thông báo Telegram
         for (const id of newIds) {
           await this.sendMessageToUser(
             '-1002262345303',
-            `🔔 Quest mới xuất hiện: ${id}, tiêu đề: ${
-              response.data.find((q: any) => q.id === id).title
-            }`,
+            `🔔 Quest mới xuất hiện: ${id} từ ${apiUrl.split('/')[4]}`,
           );
         }
 
-        // Cập nhật Redis với danh sách ID mới
-        await this.redis.sadd('quest_ids', ...newIds);
+        await this.redis.sadd(redisKey, ...newIds);
       } else {
-        this.logger.log('Không có quest mới.');
+        this.logger.log(`✅ Không có quest mới từ ${apiUrl}.`);
       }
     } catch (error) {
-      this.logger.error('Error fetching data:', error.message);
+      this.logger.error(`❌ Lỗi khi fetch từ ${apiUrl}:`, error.message);
     }
+  }
+
+  scheduleFetch() {
+    const delay = Math.random() * 60000; // Random từ 60s đến 120s
+    this.logger.log(`⏳ Lên lịch fetch tiếp theo sau ${Math.round(delay / 1000)} giây`);
+    setTimeout(() => this.fetchData(), delay);
   }
 
   async onReceiveMessage(msg: any) {
