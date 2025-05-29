@@ -131,6 +131,10 @@ export class TelegramService {
   }
 
   async onReceiveMessage(msg: TelegramBot.Message) {
+    if (!msg.text || !msg.chat || !msg.chat.id) {
+      this.logger.warn('❌ Tin nhắn không hợp lệ:', msg);
+      return;
+    }
     const chatId = msg.chat.id.toString();
     const text = msg.text?.trim();
 
