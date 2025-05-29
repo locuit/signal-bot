@@ -3,6 +3,7 @@ import { TEST_USER_ID, TELEGRAM_TOKEN } from './telegram.constants';
 import * as TelegramBot from 'node-telegram-bot-api';
 import axios from 'axios';
 import Redis from 'ioredis';
+import { SocksProxyAgent } from 'socks-proxy-agent';
 
 @Injectable()
 export class TelegramService {
@@ -28,16 +29,30 @@ export class TelegramService {
   };
 
   constructor() {
-    this.bot = new TelegramBot(TELEGRAM_TOKEN, { polling: true });
+    const proxy =
+      'socks5://ac2mjefsxv5bhv1w:a7spy9rdhngxerby@198.12.102.25:19617';
+    const agent = new SocksProxyAgent(proxy);
+
+    this.bot = new TelegramBot(TELEGRAM_TOKEN, {
+      polling: true,
+      request: {
+        agent,
+        url: 'https://api.telegram.org',
+      },
+    });
+
     this.redis = new Redis({
       host: 'localhost',
       port: 6379,
       db: 1,
     });
+
+    this.onReceiveMessage = this.onReceiveMessage.bind(this);
     this.bot.on('message', this.onReceiveMessage);
 
-    this.scheduleFetch(); // Gọi fetch lần đầu
+    this.scheduleFetch();
   }
+
 
   async fetchData() {
     try {
@@ -74,10 +89,10 @@ export class TelegramService {
         this.logger.log(`🔔 Found ${newIds.length} new quests from ${apiUrl}`);
 
         for (const id of newIds) {
-          await this.sendMessageToUser(
-            '-1002262345303',
-            `🔔 Quest mới xuất hiện: ${id} từ ${apiUrl.split('/')[4]}`,
-          );
+          // await this.sendMessageToUser(
+          //   '-1002262345303',
+          //   `🔔 Quest mới xuất hiện: ${id} từ ${apiUrl.split('/')[4]}`,
+          // );
         }
 
         await this.redis.sadd(redisKey, ...newIds);
@@ -96,6 +111,7 @@ export class TelegramService {
   }
 
   async onReceiveMessage(msg: any) {
+    console.log(msg);
     if (msg?.text) {
       const tokenSplashRegex = /^token splash (\w+)$/;
       const match = msg.text.match(tokenSplashRegex);
