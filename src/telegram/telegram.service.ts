@@ -4,6 +4,24 @@ import * as TelegramBot from 'node-telegram-bot-api';
 import axios from 'axios';
 import Redis from 'ioredis';
 import { SocksProxyAgent } from 'socks-proxy-agent';
+import OpenAI from 'openai';
+
+interface CandleData {
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+  timestamp: number;
+}
+
+interface SignalResult {
+  type: 'LONG' | 'SHORT';
+  entry: number;
+  stoploss: number;
+  takeProfit: number;
+  confidence: number;
+}
 
 @Injectable()
 export class TelegramService {
@@ -29,6 +47,7 @@ export class TelegramService {
     'user-agent':
       'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
   };
+  private openai: OpenAI;
 
   constructor() {
     const proxy =
@@ -51,22 +70,32 @@ export class TelegramService {
 
     this.onReceiveMessage = this.onReceiveMessage.bind(this);
     this.bot.on('message', this.onReceiveMessage);
+    // this.openai = new OpenAI({
+    //   apiKey:
+    // });
 
     this.scheduleFetch();
 
     setInterval(async () => {
       for (const [chatId, enabled] of this.marginWatcherEnabled.entries()) {
         if (!enabled) continue;
-        const result = await this.analyzeMarginByInterval('btc', '1m');
 
-        if (/long|short/i.test(result)) {
+        const candles = await this.fetchCandleData('btc', '1m', 50);
+        if (!candles) {
+          this.logger.warn(`⚠️ Failed to fetch candle data for BTCUSDT (1m)`);
+          continue;
+        }
+
+        const { signal, rsi } = this.simpleSignalAnalysis(candles);
+        if (signal) {
+          const message = this.formatSignal(signal, 'BTCUSDT', rsi);
           await this.sendMessageToUser(
             chatId.toString(),
-            `📈 Phát hiện tín hiệu trên BTC 1m:\n\n${result}`,
+            `📈 Phát hiện tín hiệu trên BTC 1m:\n\n${message}`,
           );
         }
       }
-    }, 60000);
+    }, 10000);
   }
 
   async fetchData() {
@@ -137,7 +166,6 @@ export class TelegramService {
     }
     const chatId = msg.chat.id.toString();
     const text = msg.text?.trim();
-
     if (text?.startsWith('/price ')) {
       const symbol = text.split(' ')[1].toUpperCase();
       const message = await this.getFormattedPriceMessage(symbol);
@@ -307,6 +335,12 @@ export class TelegramService {
       await this.sendMessageToUser(chatId, helpMessage);
       return;
     }
+    if (text.startsWith('/smargin')) {
+      await this.handleSimpleMargin(chatId, text);
+    }
+    // if (text.startsWith('/aimargin')) {
+    //   await this.handleAIMargin(chatId, text);
+    // }
   }
 
   async sendMessageToUser(userId: string, message: string) {
@@ -560,5 +594,230 @@ export class TelegramService {
       });
     }
     return bands;
+  }
+
+  private async fetchCandleData(
+    symbol: string,
+    interval = '1m',
+    limit = 50,
+  ): Promise<CandleData[] | null> {
+    try {
+      const klines = await this.fetchBinanceFuturesKlines(
+        symbol,
+        interval,
+        limit,
+      );
+      if (!klines) {
+        this.logger.warn(`⚠️ No data returned for ${symbol} (${interval})`);
+        return null;
+      }
+
+      // Transform Binance kline data to CandleData format
+      const candleData: CandleData[] = klines.map((kline: any) => ({
+        open: parseFloat(kline[1]),
+        high: parseFloat(kline[2]),
+        low: parseFloat(kline[3]),
+        close: parseFloat(kline[4]),
+        volume: parseFloat(kline[5]),
+        timestamp: parseInt(kline[0]),
+      }));
+      return candleData;
+    } catch (error) {
+      this.logger.error(
+        `❌ Error fetching candle data for ${symbol}: ${error.message}`,
+      );
+      return null;
+    }
+  }
+
+  private async handleSimpleMargin(chatId: string, text: string) {
+    const parts = text.split(' ');
+    if (parts.length < 2) {
+      return this.sendMessageToUser(
+        chatId,
+        'Vui lòng gửi lệnh đúng định dạng: /smargin BTCUSDT',
+      );
+    }
+
+    const symbol = parts[1].toUpperCase();
+    const candles = await this.fetchCandleData(symbol);
+    if (!candles) {
+      return this.sendMessageToUser(
+        chatId,
+        `❌ Không thể lấy dữ liệu nến cho ${symbol}`,
+      );
+    }
+
+    const { signal, rsi } = this.simpleSignalAnalysis(candles);
+    if (!signal) {
+      const rsiStatus =
+        rsi < 30 ? '(Quá bán)' : rsi > 70 ? '(Quá mua)' : '(Trung lập)';
+      return this.sendMessageToUser(
+        chatId,
+        `📊 Phân tích ${symbol} (SimpleSignal)\n- RSI: ${rsi.toFixed(
+          2,
+        )} ${rsiStatus}\n→ Không có tín hiệu rõ ràng`,
+      );
+    }
+
+    await this.sendMessageToUser(
+      chatId,
+      this.formatSignal(signal, symbol, rsi),
+    );
+  }
+
+  private simpleSignalAnalysis(data: CandleData[]): {
+    signal: SignalResult | null;
+    rsi: number;
+  } {
+    if (data.length < 15) {
+      this.logger.warn(
+        `⚠️ Insufficient data: ${data.length} candles, need at least 15`,
+      );
+      return { signal: null, rsi: 0 };
+    }
+
+    const rsi = this.calcRSI(data, 14);
+    const latest = data[data.length - 1];
+
+    if (rsi < 30) {
+      return {
+        signal: {
+          type: 'LONG',
+          entry: latest.close,
+          stoploss: latest.close * 0.985, // 1.5% below entry
+          takeProfit: latest.close * 1.02, // 2% above entry
+          confidence: 0.7,
+        },
+        rsi,
+      };
+    }
+
+    if (rsi > 70) {
+      return {
+        signal: {
+          type: 'SHORT',
+          entry: latest.close,
+          stoploss: latest.close * 1.015, // 1.5% above entry
+          takeProfit: latest.close * 0.98, // 2% below entry
+          confidence: 0.7,
+        },
+        rsi,
+      };
+    }
+
+    return { signal: null, rsi };
+  }
+
+  private calcRSI(data: CandleData[], period: number): number {
+    let gains = 0;
+    let losses = 0;
+    for (let i = data.length - period; i < data.length; i++) {
+      const delta = data[i].close - data[i - 1].close;
+      if (delta > 0) gains += delta;
+      else losses -= delta;
+    }
+    if (losses === 0) return 100;
+    const rs = gains / losses;
+    return 100 - 100 / (1 + rs);
+  }
+
+  private calcEMA(data: CandleData[], period: number): number {
+    const k = 2 / (period + 1);
+    let ema = data[data.length - period].close;
+    for (let i = data.length - period + 1; i < data.length; i++) {
+      ema = data[i].close * k + ema * (1 - k);
+    }
+    return ema;
+  }
+
+  private formatSignal(
+    signal: SignalResult,
+    symbol: string,
+    rsi?: number,
+  ): string {
+    const emoji = signal.type === 'LONG' ? '🟢' : '🔴';
+    let message = `${emoji} *${
+      signal.type
+    } ${symbol}*\nEntry: ${signal.entry.toFixed(
+      2,
+    )}\nSL: ${signal.stoploss.toFixed(2)}\nTP: ${signal.takeProfit.toFixed(
+      2,
+    )}\n🎯 Độ tin cậy: ${(signal.confidence * 100).toFixed(0)}%`;
+
+    if (rsi !== undefined) {
+      const rsiStatus =
+        rsi < 30 ? '(Quá bán)' : rsi > 70 ? '(Quá mua)' : '(Trung lập)';
+      message = `${emoji} *${signal.type} ${symbol}*\n- RSI: ${rsi.toFixed(
+        2,
+      )} ${rsiStatus}\nEntry: ${signal.entry.toFixed(
+        2,
+      )}\nSL: ${signal.stoploss.toFixed(2)}\nTP: ${signal.takeProfit.toFixed(
+        2,
+      )}\n🎯 Độ tin cậy: ${(signal.confidence * 100).toFixed(0)}%`;
+    }
+
+    return message;
+  }
+
+  private async handleAIMargin(chatId: string, text: string) {
+    const parts = text.split(' ');
+    if (parts.length < 2) {
+      return this.sendMessageToUser(
+        chatId,
+        'Vui lòng gửi đúng định dạng: /aimargin BTCUSDT',
+      );
+    }
+
+    const symbol = parts[1].toUpperCase();
+    const candles = await this.fetchCandleData(symbol);
+    if (!candles) {
+      return this.sendMessageToUser(
+        chatId,
+        `❌ Không thể lấy dữ liệu nến cho ${symbol}`,
+      );
+    }
+
+    const prompt =
+      `Bạn là chuyên gia phân tích kỹ thuật margin crypto.\n` +
+      `Dữ liệu nến 1 phút mới nhất:\n${JSON.stringify(candles.slice(-20))}\n` +
+      `Hãy đưa ra nhận định nên LONG hay SHORT với các mức entry, stoploss, takeProfit chính xác.\n` +
+      `Trả về kết quả dạng JSON như sau: {"type":"LONG","entry":..., "stoploss":..., "takeProfit":..., "confidence":...}`;
+
+    try {
+      const response = await this.openai.chat.completions.create({
+        model: 'gpt-4o-mini',
+        messages: [
+          {
+            role: 'system',
+            content: 'Bạn là chuyên gia phân tích kỹ thuật margin crypto.',
+          },
+          { role: 'user', content: prompt },
+        ],
+        temperature: 0.7,
+      });
+
+      const aiText = response.choices[0].message?.content;
+      if (!aiText)
+        return this.sendMessageToUser(chatId, 'AI không trả về nội dung.');
+
+      let signal: SignalResult;
+      try {
+        signal = JSON.parse(aiText);
+      } catch {
+        return this.sendMessageToUser(
+          chatId,
+          'AI trả về định dạng không đúng JSON.',
+        );
+      }
+
+      return this.sendMessageToUser(chatId, this.formatSignal(signal, symbol));
+    } catch (err) {
+      this.logger.error(`❌ AI error: ${err.message}`);
+      return this.sendMessageToUser(
+        chatId,
+        'Lỗi khi gọi AI, vui lòng thử lại sau.',
+      );
+    }
   }
 }
