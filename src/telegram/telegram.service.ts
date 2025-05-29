@@ -287,6 +287,22 @@ export class TelegramService {
       );
       return;
     }
+    if (text?.startsWith('/help')) {
+      const helpMessage = `
+      🤖 Danh sách lệnh bot hỗ trợ:
+      
+      /price <coin> – Xem giá hiện tại. Ví dụ: /price btc
+      /val <số lượng> <coin> – Tính giá trị coin theo USDT. Ví dụ: /val 0.5 btc
+      /p2p <số lượng> <coin> – Xem tỷ giá P2P và giá trị tương ứng. Ví dụ: /p2p 100 usdt
+      /margin <coin> <khung thời gian> – Phân tích margin futures theo biểu đồ. Ví dụ: /margin eth 15m
+      /signal on|off – Bật/tắt tín hiệu tự động khi có phân tích Long/Short BTC chart 1m
+            
+      📊 Khung thời gian hỗ trợ: 1m, 3m, 5m, 15m, 30m, 1h, 2h, 4h, 6h, 12h, 1d
+      🧠 Tín hiệu tự động chỉ áp dụng cho BTC khung 1m khi bật /signal on
+        `;
+      await this.sendMessageToUser(chatId, helpMessage);
+      return;
+    }
   }
 
   async sendMessageToUser(userId: string, message: string) {
