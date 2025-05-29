@@ -18,8 +18,6 @@ interface CandleData {
 interface SignalResult {
   type: 'LONG' | 'SHORT';
   entry: number;
-  stoploss: number;
-  takeProfit: number;
   confidence: number;
 }
 
@@ -685,8 +683,6 @@ export class TelegramService {
         signal: {
           type: 'LONG',
           entry: latest.close,
-          stoploss: latest.close * 0.985, // 1.5% below entry
-          takeProfit: latest.close * 1.02, // 2% above entry
           confidence: 0.7,
         },
         rsi,
@@ -698,8 +694,6 @@ export class TelegramService {
         signal: {
           type: 'SHORT',
           entry: latest.close,
-          stoploss: latest.close * 1.015, // 1.5% above entry
-          takeProfit: latest.close * 0.98, // 2% below entry
           confidence: 0.7,
         },
         rsi,
@@ -739,22 +733,18 @@ export class TelegramService {
     const emoji = signal.type === 'LONG' ? '🟢' : '🔴';
     let message = `${emoji} *${
       signal.type
-    } ${symbol}*\nEntry: ${signal.entry.toFixed(
-      2,
-    )}\nSL: ${signal.stoploss.toFixed(2)}\nTP: ${signal.takeProfit.toFixed(
-      2,
-    )}\n🎯 Độ tin cậy: ${(signal.confidence * 100).toFixed(0)}%`;
+    } ${symbol}*\nEntry: ${signal.entry.toFixed(2)}\n🎯 Độ tin cậy: ${(
+      signal.confidence * 100
+    ).toFixed(0)}%`;
 
     if (rsi !== undefined) {
       const rsiStatus =
         rsi < 30 ? '(Quá bán)' : rsi > 70 ? '(Quá mua)' : '(Trung lập)';
       message = `${emoji} *${signal.type} ${symbol}*\n- RSI: ${rsi.toFixed(
         2,
-      )} ${rsiStatus}\nEntry: ${signal.entry.toFixed(
-        2,
-      )}\nSL: ${signal.stoploss.toFixed(2)}\nTP: ${signal.takeProfit.toFixed(
-        2,
-      )}\n🎯 Độ tin cậy: ${(signal.confidence * 100).toFixed(0)}%`;
+      )} ${rsiStatus}\nEntry: ${signal.entry.toFixed(2)}\n🎯 Độ tin cậy: ${(
+        signal.confidence * 100
+      ).toFixed(0)}%`;
     }
 
     return message;
